@@ -15,3 +15,7 @@ variable "user" {
   default = "ubuntu"
 
 }
+# Fetch my computer's current public IP address
+data "http" "my_ip" {
+  url = "http://ipv4.icanhazip.com"
+}

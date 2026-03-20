@@ -20,7 +20,7 @@ resource "aws_instance" "jenkins_inst" {
   }
   root_block_device {
     volume_size = 20
-    volume_type = "gp3" 
+    volume_type = "gp3"
   }
   provisioner "remote-exec" {
     inline = [
