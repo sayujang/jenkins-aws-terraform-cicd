@@ -1,114 +1,127 @@
+def COLOR_MAP = [
+    'SUCCESS': 'good',
+    'FAILURE': 'danger',
+]
+
 pipeline {
     agent any
+
     tools {
-        maven "MAVEN3.9"
+        maven "MAVEN3.9.9"
         jdk "JDK17"
     }
 
-
     environment {
-        registryCredential = 'ecr:us-east-2:awscreds'
-        appRegistry = "951401132355.dkr.ecr.us-east-2.amazonaws.com/vprofileappimg"
-        vprofileRegistry = "https://951401132355.dkr.ecr.us-east-2.amazonaws.com"
-        cluster = "vprofile"
-        service = "vprofileappsvc"
+        registryCredential = 'ecr:us-east-1:awscreds'
+        appRegistry        = "061039781847.dkr.ecr.us-east-1.amazonaws.com/vprofileappimg"
+        vprofileRegistry   = "https://061039781847.dkr.ecr.us-east-1.amazonaws.com"
+        cluster            = "vprofile-sayuj-cluster"  // ECS cluster name — must match exactly
+        service            = "vprofileappsvc"           // ECS service name — must match exactly
     }
-  stages {
-   
-        stage('Fetch code') {
+
+    stages {
+
+        stage('fetch code') {
             steps {
-               git branch: 'docker', url: 'https://github.com/hkhcoder/vprofile-project.git'
+                git branch: 'docker', url: 'https://github.com/hkhcoder/vprofile-project.git'
             }
-
         }
 
-
-        stage('Build'){
-            steps{
-               sh 'mvn install -DskipTests'
+        stage('Build') {
+            steps {
+                sh 'mvn install -DskipTests'
             }
-
             post {
-               success {
-                  echo 'Now Archiving it...'
-                  archiveArtifacts artifacts: '**/target/*.war'
-               }
+                success {
+                    echo "archiving artifact"
+                    archiveArtifacts artifacts: '**/*.war'
+                }
             }
         }
 
-        stage('UNIT TEST') {
-            steps{
+        stage('unit test') {
+            steps {
                 sh 'mvn test'
             }
         }
 
-        stage('Checkstyle Analysis') {
-            steps{
+        stage('checkstyle analysis') {
+            steps {
                 sh 'mvn checkstyle:checkstyle'
             }
         }
 
-        stage("Sonar Code Analysis") {
+        stage('Sonar code analysis') {
             environment {
                 scannerHome = tool 'sonar6.2'
             }
             steps {
-              withSonarQubeEnv('sonarserver') {
-                sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
-                   -Dsonar.projectName=vprofile \
-                   -Dsonar.projectVersion=1.0 \
-                   -Dsonar.sources=src/ \
-                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
-                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
-              }
+                withSonarQubeEnv('sonarserver') {
+                    sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
+                       -Dsonar.projectName=vprofile \
+                       -Dsonar.projectVersion=1.0 \
+                       -Dsonar.sources=src/ \
+                       -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
+                       -Dsonar.junit.reportsPath=target/surefire-reports/ \
+                       -Dsonar.jacoco.reportsPath=target/jacoco.exec \
+                       -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml
+                    '''
+                }
             }
         }
 
-        stage("Quality Gate") {
+        stage('Quality Gate') {
             steps {
-              timeout(time: 1, unit: 'HOURS') {
-                waitForQualityGate abortPipeline: true
-              }
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: true
+                }
             }
-          }
+        }
 
         stage('Build App Image') {
-          steps {
-       
-            script {
-                dockerImage = docker.build( appRegistry + ":$BUILD_NUMBER", "./Docker-files/app/multistage/")
+            steps {
+                script {
+                    // ":$BUILD_NUMBER" needs double quotes — variable must resolve
+                    dockerImage = docker.build(appRegistry + ":$BUILD_NUMBER", "./Docker-files/app/multistage/")
                 }
-          }
-    
+            }
         }
 
         stage('Upload App Image') {
-          steps{
-            script {
-              docker.withRegistry( vprofileRegistry, registryCredential ) {
-                dockerImage.push("$BUILD_NUMBER")
-                dockerImage.push('latest')
-              }
+            steps {
+                script {
+                    docker.withRegistry(vprofileRegistry, registryCredential) {
+                        dockerImage.push("$BUILD_NUMBER")  // double quotes: variable must resolve
+                        dockerImage.push('latest')          // single quotes: fixed string
+                    }
+                }
             }
-          }
         }
 
-        stage('Remove Container Images'){
-            steps{
+        stage('Remove images from jenkins') {
+            steps {
+                // Single quotes mandatory: $(command) is bash, not Groovy
                 sh 'docker rmi -f $(docker images -a -q)'
             }
         }
 
-
-        stage('Deploy to ecs') {
-          steps {
-            withAWS(credentials: 'awscreds', region: 'us-east-2') {
-            sh 'aws ecs update-service --cluster ${cluster} --service ${service} --force-new-deployment'
-               }
-          }
+        stage('Deploy to ECS') {
+            steps {
+                // withAWS injects awscreds (access key + secret key) into the environment
+                // so the aws CLI can authenticate with AWS automatically
+                withAWS(credentials: 'awscreds', region: 'us-east-1') {
+                    sh 'aws ecs update-service --cluster ${cluster} --service ${service} --force-new-deployment'
+                }
+            }
         }
+    }
 
-  }
+    post {
+        always {
+            echo 'Slack Notifications.'
+            slackSend channel: '#all-devopslearners',
+                color: COLOR_MAP[currentBuild.currentResult],
+                message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
+        }
+    }
 }
